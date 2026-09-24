@@ -1,0 +1,1 @@
+"""Steam save scanner package."""
