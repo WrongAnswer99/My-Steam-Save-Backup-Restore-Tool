@@ -1,126 +1,224 @@
-# Steam Saves Backup
+# My Steam Save Backup & Restore Tool
 
-这个项目目前提供一个只读扫描器，用于：
+面向 Windows 的 Steam 游戏存档发现、增量备份、历史版本管理和恢复工具。
 
-1. 从 Windows 注册表定位 Steam。
-2. 读取 `steamapps/libraryfolders.vdf`，发现所有 Steam 库。
-3. 读取每个 `appmanifest_*.acf`，列出已安装的游戏和软件。
-4. 读取 `third_party/ludusavi-manifest/data/manifest.yaml` 中的存档规则。
-5. 展开 Windows、Steam 库、安装目录和 Steam 用户 ID 等变量。
-6. 只记录本机当前真实存在的文件、目录和注册表项。
-7. 将普通本地数据与 `Steam/userdata` 数据分开输出。
-8. 在常见用户数据目录中按游戏名和安装名补充发现实际含文件的目录，用于覆盖上游清单尚未收录或路径滞后的游戏。
+项目会读取本机 Steam 库与 [Ludusavi manifest](https://github.com/mtkennerly/ludusavi-manifest)，定位实际存在的游戏存档、配置目录和 Steam `userdata` 数据。扫描阶段只读；备份、历史清除和恢复功能会写入或删除备份数据，恢复时会向原始存档路径复制文件。
 
-## 运行
+## 主要功能
 
-在项目根目录执行：
+- 从 Windows 注册表或默认安装路径定位 Steam。
+- 读取 `libraryfolders.vdf` 和 `appmanifest_*.acf`，发现所有 Steam 库及已安装游戏。
+- 根据 Ludusavi manifest 展开 Windows、Steam 库、游戏安装目录和 Steam 用户 ID 等路径变量。
+- 只收集本机当前存在的文件、目录和注册表项。
+- 扫描本机 `Steam/userdata`，并按 Steam 账号组织数据。
+- 在常见 Windows 用户目录中按游戏名补充发现存档目录。
+- 按 `local` 和各 Steam 账号独立计算 SHA-256，只备份发生变化的分区。
+- 将旧备份保存为带时间戳的历史版本。
+- 查看、打包、导入、清除和恢复历史版本。
+- 提供扫描与备份命令行入口，以及基于 PySide6 的图形界面。
 
-```powershell
-python .\src\steam_save_scanner.py
-```
+## 环境要求
 
-默认生成 `scan_result.generated.json`。也可以指定路径：
+- Windows
+- Python 3
+- Git（仅更新 Ludusavi manifest 时需要）
+- PowerShell（仅运行 manifest 更新脚本时需要）
 
-```powershell
-python .\src\steam_save_scanner.py `
-  --steam-root E:\Steam `
-  --manifest .\third_party\ludusavi-manifest\data\manifest.yaml `
-  --output .\scan_result.generated.json
-```
-
-输出中每个应用包含：
-
-- `local.directories`：实际存在的本地存档或配置目录。
-- `local.files`：直接位于游戏根目录等位置、不适合整目录备份的文件。
-- `local.heuristic_directories`：按游戏名或安装名在常见用户数据目录中自动匹配到的目录。
-- `local.registry_keys`：清单声明且本机存在的注册表项。
-- `steam_userdata.app_directories`：对应账号和 AppID 的完整 Steam userdata 目录。
-- `steam_userdata.remote_directories`：其中实际存在的 `remote` 目录。
-- `steam_userdata.manifest_directories`：Ludusavi 规则直接命中的 userdata 子目录。
-- `steam_userdata.remote_file_count`：本机 `remote` 目录内实际存在的文件数。
-- `missing_local`、`missing_steam_userdata`：扫描后没有找到相应数据的应用。
-- `missing_remote_directory`、`missing_remote_files`：没有 `remote` 目录或目录内没有文件的应用。
-
-程序不判断文件究竟是存档、配置还是缓存。只要 Ludusavi 清单声明了该路径并且路径存在，就会保留；`Steam/userdata/<账号>/<AppID>` 只要存在也会保留。
-
-Ludusavi 清单包含普通本地路径、部分 Steam `userdata` 路径和云同步标记，但它不是 Steam 云服务器的在线文件目录。本程序会额外扫描本机 `Steam/userdata`；只有已经同步或下载到当前电脑的远程文件才能被检测到。
-
-## 图形界面
-
-界面使用 Qt 官方 Python 绑定 PySide6。首次运行前安装依赖：
+安装图形界面依赖：
 
 ```powershell
 python -m pip install -r .\requirements.txt
 ```
 
-然后启动：
+主项目目前唯一声明的第三方 Python 依赖是 `PySide6>=6.7,<7`。`third_party/ludusavi-manifest` 中的 Rust 工具链属于上游数据项目，正常使用本工具不需要安装 Rust 或 Cargo。
 
-```powershell
-python .\src\gui.py
-```
+## 快速开始
 
-“检测所有游戏”会重新扫描本机已安装的全部 Steam 游戏并更新 `scan_result.generated.json`。每个游戏默认显示为单行折叠卡片，摘要包含本地路径数、远程账号和路径数、Steam AppID、修改状态和上次备份时间；展开后可以点击来源路径和备份文件夹并在文件资源管理器中打开。备份路径以程序目录为基准计算，因此程序整体移动后会在新位置重新生成绝对显示路径。搜索会忽略大小写、空格和标点，并按字符顺序进行非连续子序列匹配；名称和 Steam ID 均适用。搜索、本地和远程三个筛选条件为“且”关系。游戏名称前的钉子可以将游戏固定在所有未固定游戏之前，固定状态记录在本机 `ui_settings.json`；置顶不会绕过筛选，不符合条件的固定游戏仍然隐藏。界面还支持全选、备份选中、备份所有以及单项备份。“所有”范围的主要操作采用蓝底白字，“选中”范围采用白底深色字。
+以下命令均在项目根目录执行。
 
-“检测所有更改”会在后台重新计算全部来源路径的 SHA-256；“检测选中更改”只处理勾选的游戏。两者都会与每个游戏 `hashes.txt` 中记录的来源路径和哈希比较。未备份、新增、删除、路径变化、内容变化或当前备份目录缺失都会标记为“有修改”；完全一致则标记为“无修改”。检测本身不会复制文件，之后可按需执行备份。
-
-“查看历史版本”按时间列出已有备份。每个时间点可以清除或打包：清除会删除该时间点的备份目录；如果其中包含当前 `local` 或账号目录，程序也会同步移除其哈希追踪记录，但不会修改游戏的原始存档。“仅打包这个时间点更新的”只导出该时间点发生更新的分区，“打包这个时间点状态的全部存档”则为每个游戏及其本地/账号分区选择该时间点或之前最后一次记录。ZIP 中的目录统一使用 `local` 或账号名，不保留 `-2026-...` 一类历史时间后缀。
-
-历史窗口支持全选、删除选中和打包选中。批量打包会生成一个 ZIP，以每个所选时间点作为顶层目录；每个时间目录内仍采用 `游戏/local` 或 `游戏/账号` 结构。选择“完整状态”时，会分别重建每个所选时间点当时的全部存档状态。
-
-每个导出的 ZIP 都包含 `steam-saves-backup.json` 清单，其中记录实际导出时间、包含的备份时间点、打包模式以及恢复所需的原路径映射。全局历史窗口可以通过“从压缩包导入”重新导入这类 ZIP；导入内容会作为带时间的历史版本保存，不会直接覆盖当前备份或游戏原始存档。
-
-展开游戏卡片后，可以从备份目录右侧进入该游戏自己的历史版本窗口。单游戏窗口不提供打包操作，支持全选、删除选中，并在每个时间点提供红色“清除”和黄色“恢复”按钮。恢复会选择该时间点或之前每个本地/账号分区的最后一份记录，将其中的文件合并复制回记录的原始路径；同名文件会覆盖，但不会删除原目录里额外存在的文件。新产生的历史目录会在 `history.json` 中保留对应路径映射；较早版本若没有独立映射，会尽量使用当前同分区记录，无法确定时会跳过并提示。
-
-每次点击备份按钮时只记录一次批次时间。本次任务中所有发生更新的游戏、本地目录和账号目录都会使用同一个时间，因此在历史窗口中显示为同一个时间点，而不会因逐个复制耗时被拆成相邻的多个秒数。
-
-检测期间会显示独立进度窗口，包括当前游戏、当前目录或文件、总进度及实时日志。完成后窗口会保留，点击右下角“确定”才关闭。游戏卡片随后按“有修改、无修改、未检测”的顺序排列，同一状态按名称排序，并自动勾选所有“有修改”的游戏。
-
-## 备份
-
-命令行执行：
-
-```powershell
-python .\src\backup_manager.py
-```
-
-程序会自动创建 `backup_result`，布局如下：
-
-```text
-backup_result/
-  <AppID>_<游戏名>/
-    local/
-      001_<原目录名>/
-    <Steam账号ID>/
-      remote/
-    hashes.txt
-```
-
-没有任何现存数据的游戏会被跳过。程序会比较来源路径和 SHA-256：没有变化便不重复复制；发生变化时，先把旧目录按其上次备份时间改名（如 `local-2026-09-24-12-37-55` 或 `<账号>-2026-09-24-12-37-55`），再把新副本放回固定的 `local` 或账号目录。不同层独立判断，因此本地数据变化不会重复复制未变化的账号数据。
-
-复制会先在临时目录完成并核对 SHA-256。`hashes.txt` 记录每个来源的哈希、文件数、大小、来源路径、备份内路径和该层的备份时间。注册表项目前只在 `hashes.txt` 中注明，不会导出注册表内容。
-
-## 测试
-
-```powershell
-python -m unittest discover -s tests -v
-```
-
-## 第三方清单
-
-`third_party/ludusavi-manifest` 是 [Ludusavi manifest](https://github.com/mtkennerly/ludusavi-manifest) 的 vendored snapshot。其许可证和上游说明保留在该子目录中。
-
-当前目录本身是一个独立的浅克隆。更新清单时可执行：
+### 1. 获取或更新 Ludusavi manifest
 
 ```powershell
 .\scripts\update_manifest.ps1
 ```
 
-`update_manifest.ps1` 使用 Git 默认网络设置，不配置代理，适合其他电脑。
+脚本首次运行时会将上游仓库浅克隆到 `third_party/ludusavi-manifest`；以后使用 `git pull --ff-only` 更新。该目录是独立 Git 仓库，不会提交到本项目。
 
-本机若无法直连 GitHub，可以执行：
+### 2. 启动图形界面
 
 ```powershell
-.\scripts\update_manifest_local.ps1
+python .\src\gui.py
 ```
 
-`update_manifest_local.ps1` 默认只让本次 Git 命令通过 `http://127.0.0.1:7892`，不会修改全局 Git 代理配置；也可以通过 `-Proxy` 指定其他 HTTP 代理。
+图形界面固定使用项目根目录下的：
+
+- `scan_result.generated.json`
+- `third_party/ludusavi-manifest/data/manifest.yaml`
+- `backup_result/`
+- `ui_settings.json`
+
+首次使用时点击“检测所有游戏”生成扫描报告，然后检测更改并执行备份。
+
+## 图形界面
+
+图形界面支持：
+
+- 检测全部已安装 Steam 游戏。
+- 检测全部或选中游戏的存档变化。
+- 备份全部、选中或单个游戏。
+- 按游戏名或 Steam AppID 搜索。
+- 按本地数据和 Steam 账号数据筛选。
+- 置顶常用游戏；状态保存在本机 `ui_settings.json`。
+- 展开游戏卡片，查看并在资源管理器中打开来源路径和备份目录。
+- 查看全局历史或单游戏历史。
+- 将单个或多个时间点导出为 ZIP。
+- 导入本工具生成的 ZIP，保存为历史版本。
+- 清除历史备份。
+- 将单个游戏恢复到指定时间点。
+
+搜索会忽略大小写、空格和标点，并支持非连续字符顺序匹配。检测任务会比较当前来源与 `hashes.txt` 中保存的路径和 SHA-256；新增、删除、路径变化、内容变化或当前备份目录缺失都会标记为“有修改”。检测本身不会复制文件。
+
+## 扫描命令行
+
+默认扫描：
+
+```powershell
+python .\src\steam_save_scanner.py
+```
+
+默认生成 `scan_result.generated.json`。也可以指定参数：
+
+```powershell
+python .\src\steam_save_scanner.py `
+  --steam-root "E:\Steam" `
+  --manifest ".\third_party\ludusavi-manifest\data\manifest.yaml" `
+  --output ".\scan_result.generated.json"
+```
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `--steam-root` | 自动检测 | Steam 安装根目录 |
+| `--manifest` | `third_party/ludusavi-manifest/data/manifest.yaml` | Ludusavi manifest 路径 |
+| `--output` | `scan_result.generated.json` | 扫描报告输出路径 |
+
+扫描报告中的每个应用主要包含：
+
+- `local.directories`：实际存在的本地目录。
+- `local.files`：不适合按整个目录备份的独立文件。
+- `local.heuristic_directories`：按游戏名在常见用户目录中补充匹配的目录。
+- `local.registry_keys`：manifest 声明且本机存在的注册表项。
+- `steam_userdata.app_directories`：对应账号和 AppID 的完整 userdata 目录。
+- `steam_userdata.remote_directories`：实际存在的 `remote` 目录。
+- `steam_userdata.manifest_directories`：manifest 规则命中的 userdata 子目录。
+- `missing_local`、`missing_steam_userdata`：没有找到对应数据的应用。
+
+程序不判断文件是存档、配置还是缓存。只要 manifest 声明的路径存在，或对应 `Steam/userdata/<账号>/<AppID>` 存在，就可能被纳入结果。启发式扫描也可能漏报或命中同名的无关目录，建议在首次备份前检查来源路径。
+
+## 备份命令行
+
+先生成扫描报告，再执行：
+
+```powershell
+python .\src\backup_manager.py
+```
+
+也可以指定输入和输出：
+
+```powershell
+python .\src\backup_manager.py `
+  --report ".\scan_result.generated.json" `
+  --output ".\backup_result"
+```
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `--report` | `scan_result.generated.json` | 扫描报告路径 |
+| `--output` | `backup_result` | 备份根目录 |
+
+没有任何现存来源的游戏会被跳过。一个游戏备份失败不会阻止其他游戏继续处理，但命令最终会返回非零退出码。
+
+## 备份结构与增量策略
+
+```text
+backup_result/
+  <AppID>_<游戏名>/
+    local/
+      001_<原名称>/
+      002_<原名称>/
+    <Steam账号ID>/
+      ...
+    local-2026-09-25-12-30-00/
+      ...
+    <Steam账号ID>-2026-09-25-12-30-00/
+      ...
+    hashes.txt
+    history.json
+```
+
+备份以分区为单位独立判断变化：
+
+- `local`：普通本地文件和目录。
+- `remote:<账号ID>`：对应 Steam 账号的 userdata。
+
+发生变化的分区会先复制到临时目录并重新核对 SHA-256。校验成功后，旧的当前目录会改名为带时间戳的历史目录，新副本再成为当前目录。未变化的分区不会重复复制；因此本地数据变化不会同时复制未变化的账号数据。
+
+`hashes.txt` 记录当前来源的类型、SHA-256、文件数、大小、原始绝对路径、备份内路径和备份时间。`history.json` 保存历史快照到原始路径的映射，用于恢复。
+
+注册表项目前只会被扫描并记录，不会导出注册表内容，也不会在恢复时写回注册表。
+
+## 历史版本、导出与导入
+
+历史窗口提供两种导出模式：
+
+- **仅打包这个时间点更新的内容**：只导出该时间点发生变化的分区。
+- **打包这个时间点状态的全部存档**：为每个游戏及分区选择该时间点或之前最后一份记录，重建当时的完整状态。
+
+多时间点批量导出会以时间点作为 ZIP 顶层目录。每个 ZIP 都包含 `steam-saves-backup.json`，记录导出模式、时间点、快照和原始路径映射。
+
+从 ZIP 导入只接受本工具生成的包。导入内容会保存为历史版本，不会直接覆盖当前备份，也不会立即写回游戏存档。
+
+## 恢复行为
+
+恢复会选取指定时间点或之前每个分区的最后一份快照，并复制回元数据记录的原始绝对路径：
+
+- 同名文件会覆盖。
+- 原始目录中备份之外的额外文件不会删除。
+- 注册表不会恢复。
+- 恢复不是镜像同步，恢复后的目录不一定与快照完全一致。
+- 跨电脑导入时，用户名、盘符或 Steam 安装位置可能不同；当前没有路径重映射界面，原始绝对路径失效时相关分区会无法恢复。
+
+建议恢复前退出对应游戏，必要时先另行复制当前存档。
+
+## 生成文件
+
+以下内容是本机生成数据，已加入 `.gitignore`：
+
+- `scan_result.generated.json`：扫描结果，可能包含用户名、Steam 账号 ID 和绝对路径。
+- `ui_settings.json`：GUI 置顶状态。
+- `backup_result/`：当前备份、历史版本和导出文件。
+- `third_party/ludusavi-manifest/`：独立克隆的上游仓库。
+
+## 已知限制
+
+- 当前仅支持 Windows。
+- 不连接 Steam Cloud API，只能发现已经同步或下载到本机的数据。
+- manifest 使用面向当前需求的轻量解析器，不支持 Ludusavi YAML 规范中的所有结构和路径变量。
+- 启发式目录扫描依赖名称匹配，可能漏报或误匹配。
+- 注册表项只检测、不备份、不恢复。
+- 恢复不会删除目标目录中的额外文件。
+- 历史元数据保存绝对来源路径，跨电脑恢复可能因路径不同而失败。
+- 扫描与备份 CLI 的默认路径相对于当前工作目录；从其他目录运行时应显式传入路径参数。
+
+## 测试
+
+安装依赖后，在项目根目录执行：
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
+测试覆盖扫描器解析、备份变化检测与历史归档、ZIP 导入导出、恢复/清除行为，以及主要 GUI 交互。GUI 测试使用 Qt offscreen 平台，可在无显示器环境运行。
+
+## 第三方数据
+
+本项目使用 [Ludusavi manifest](https://github.com/mtkennerly/ludusavi-manifest) 提供的游戏存档规则。其仓库会独立克隆到 `third_party/ludusavi-manifest`，许可证和上游说明以该仓库内容为准。
